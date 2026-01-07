@@ -7,7 +7,6 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 from tenacity import (
-    RetryError,
     Retrying,
     retry_if_exception_type,
     stop_after_attempt,
@@ -68,6 +67,15 @@ class GeminiService:
         # Read and encode audio
         with audio_path.open("rb") as f:
             audio_data = f.read()
+
+        # Determine mime type based on extension
+        mime_type, _ = mimetypes.guess_type(audio_path)
+        if not mime_type:
+            # Fallback for common types if mimetypes fails
+            if audio_path.suffix.lower() == ".mp3":
+                mime_type = "audio/mpeg"
+            else:
+                mime_type = "audio/wav"
 
         prompt = (
             "You are a world-class production designer.\n"
@@ -152,23 +160,21 @@ class GeminiService:
         prompt: str,
         output_path: Path,
         reference_image_paths: list[str] | None = None,
-        model: str = "imagen-3.0-generate-001",
         retries: int = 2,
     ) -> str:
         """Generate an image using the Gemini API.
 
         Args:
             prompt: Text prompt for image generation.
-            output_path: Path to save the generated image. REQUIRED.
+            output_path: Path to save the generated image.
             reference_image_paths: List of paths to reference images.
-            model: Model to use.
             retries: Number of retries on failure.
 
         Returns:
             str: The path to the saved image.
 
         Raises:
-            RuntimeError: If generation fails after retries.
+            RetryError: If generation fails after retries.
 
         """
         if reference_image_paths is None:
@@ -187,19 +193,15 @@ class GeminiService:
         parts.append(types.Part.from_text(text=prompt))
         model_name = "gemini-2.5-flash-image"
 
-        try:
-            # Only retry on standard exceptions, letting generic ones bubble if needed?
-            retryer = Retrying(
-                stop=stop_after_attempt(retries + 1),
-                wait=wait_exponential(multiplier=2, min=2, max=10),
-                retry=retry_if_exception_type(Exception),
-                reraise=True,  # Change to True to raise the exception to caller
-            )
+        # Use tenacity Retrying context manager for dynamic retry config
+        retryer = Retrying(
+            stop=stop_after_attempt(retries + 1),
+            wait=wait_exponential(multiplier=2, min=2, max=10),
+            retry=retry_if_exception_type(Exception),
+            reraise=True,
+        )
 
-            def _attempt() -> str:
-                return self._generate_image_attempt(model, parts, output_path)
+        def _attempt() -> str:
+            return self._generate_image_attempt(model_name, parts, output_path)
 
-            return retryer(_attempt)
-
-        except RetryError as e:
-            raise e.last_attempt.exception() from e
+        return retryer(_attempt)

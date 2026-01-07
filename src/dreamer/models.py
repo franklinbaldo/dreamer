@@ -1,6 +1,6 @@
 """Pydantic data models for the SonicVision Studio."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class VisualElement(BaseModel):
@@ -34,3 +34,9 @@ class Storyboard(BaseModel):
     title: str
     production_design: ProductionDesign
     scenes: list[Scene]
+
+    @model_validator(mode="after")
+    def sort_scenes(self) -> "Storyboard":
+        """Ensure scenes are sorted by timestamp."""
+        self.scenes.sort(key=lambda s: s.timestamp)
+        return self

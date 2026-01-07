@@ -18,11 +18,99 @@ app = typer.Typer(help="SonicVision Studio CLI - Audio to Visual Storyboard")
 console = Console()
 
 
-def _get_service(api_key: str | None = None) -> GeminiService:
-    # Load env vars only when command runs, to avoid side effects on import
-    load_dotenv()
-    if not api_key:
-        api_key = os.getenv("GEMINI_API_KEY")
+def _analyze_audio(service: GeminiService, audio_file: Path) -> Storyboard:
+    console.rule("[bold blue]Phase 1: Audio Analysis")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Listening and Storyboarding...", total=None)
+        storyboard = service.analyze_audio(audio_file)
+        progress.update(task, completed=100)
+
+    console.print(
+        Panel(
+            f"[bold]Title:[/bold] {storyboard.title}\n"
+            f"[bold]Style:[/bold] {storyboard.production_design.art_style}\n"
+            f"[bold]Scenes:[/bold] {len(storyboard.scenes)} detected",
+            title="Storyboard Generated",
+            border_style="green",
+        ),
+    )
+    return storyboard
+
+
+def _generate_elements(
+    service: GeminiService,
+    storyboard: Storyboard,
+    elements_dir: Path,
+) -> list[str]:
+    console.rule("[bold purple]Phase 2: Character & Element Design")
+
+    elements = storyboard.production_design.recurring_elements
+    ref_image_paths = []
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.percentage:>3.0f}%"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Generating References...", total=len(elements))
+
+        for el in elements:
+            safe_name = (
+                "".join(
+                    [c for c in el.name if c.isalnum() or c in (" ", "-", "_")],
+                )
+                .strip()
+                .replace(" ", "_")
+            )
+            img_path = elements_dir / f"{safe_name}.png"
+
+            prompt = (
+                f"Production Design: Element Reference Sheet. "
+                f"Style: {storyboard.production_design.art_style}. "
+                f"Subject: {el.name}. "
+                f"Description: {el.description}. "
+                f"Show only this subject against a neutral background for reference."
+            )
+
+            # Generate
+            try:
+                saved_path = service.generate_image(prompt, output_path=img_path)
+                el.image_url = saved_path
+                ref_image_paths.append(saved_path)
+            except Exception as e:  # noqa: BLE001
+                console.print(
+                    f"[yellow]Warning: Failed to generate element "
+                    f"'{el.name}': {e}[/yellow]",
+                )
+
+            progress.advance(task)
+    return ref_image_paths
+
+
+def _render_scenes(
+    service: GeminiService,
+    storyboard: Storyboard,
+    scenes_dir: Path,
+    ref_image_paths: list[str],
+) -> None:
+    console.rule("[bold cyan]Phase 3: Scene Production")
+
+    scenes = storyboard.scenes
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.percentage:>3.0f}%"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Rendering Scenes...", total=len(scenes))
 
     if not api_key:
         console.print(
@@ -31,13 +119,18 @@ def _get_service(api_key: str | None = None) -> GeminiService:
         raise typer.Exit(code=1)
     return GeminiService(api_key)
 
-
-def _safe_filename(name: str) -> str:
-    """Create a safe filename with a stable hash to avoid collisions."""
-    # Basic safe name
-    safe_name = "".join(
-        [c for c in name if c.isalnum() or c in (" ", "-", "_")],
-    ).strip().replace(" ", "_")
+            # Generate with references
+            try:
+                saved_path = service.generate_image(
+                    prompt=scene_prompt,
+                    output_path=img_path,
+                    reference_image_paths=ref_image_paths,  # Sending references!
+                )
+                scene.image_url = saved_path
+            except Exception as e:  # noqa: BLE001
+                console.print(
+                    f"[yellow]Warning: Failed to generate scene {i}: {e}[/yellow]",
+                )
 
     # Add hash to ensure uniqueness if names are similar but not identical
     # or to just avoid collisions generally.
@@ -65,11 +158,25 @@ def analyze(
         help="Google Gemini API Key",
     ),
 ) -> None:
-    """Phase 1: Analyze audio and generate storyboard."""
+    """Transform audio into a synchronized visual storyboard using Gemini."""
+    # Load environment variables
+    load_dotenv()
+
     if not audio_file.exists():
         console.print(f"[bold red]Error:[/bold red] File {audio_file} not found.")
         raise typer.Exit(code=1)
 
+    # Validate audio file extension
+    valid_extensions = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+    if audio_file.suffix.lower() not in valid_extensions:
+        console.print(
+            f"[bold red]Error:[/bold red] Unsupported audio format: "
+            f"{audio_file.suffix}. "
+            f"Supported: {', '.join(sorted(valid_extensions))}",
+        )
+        raise typer.Exit(code=1)
+
+    # Setup directories
     output_dir.mkdir(parents=True, exist_ok=True)
     storyboard_path = output_dir / "storyboard.json"
 

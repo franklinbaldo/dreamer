@@ -200,7 +200,10 @@ def test_generate_image_fallback_missing_candidates(mock_genai_client, tmp_path)
     # This should fail after retries because it raises
     # RuntimeError "No image data in response"
     # and then retries loop catches it.
-    with patch("time.sleep"), pytest.raises(RuntimeError, match="No image data"):
+    with (
+        patch("time.sleep"),
+        pytest.raises(RuntimeError, match="No image data in response"),
+    ):
         service.generate_image(
             "prompt",
             output_path=Path("out.png"),

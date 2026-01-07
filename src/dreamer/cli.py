@@ -7,12 +7,10 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from tenacity import RetryError
 
 from .models import Storyboard
 from .service import GeminiService
-
-# Load environment variables
-load_dotenv()
 
 # Setup Typer and Console
 app = typer.Typer(help="SonicVision Studio CLI - Audio to Visual Storyboard")
@@ -76,11 +74,14 @@ def _generate_elements(
             )
 
             # Generate
-            saved_path = service.generate_image(prompt, output_path=img_path)
-
-            if saved_path:
+            try:
+                saved_path = service.generate_image(prompt, output_path=img_path)
                 el.image_url = saved_path
                 ref_image_paths.append(saved_path)
+            except Exception as e:
+                console.print(
+                    f"[yellow]Warning: Failed to generate element '{el.name}': {e}[/yellow]",
+                )
 
             progress.advance(task)
     return ref_image_paths
@@ -118,14 +119,17 @@ def _render_scenes(
             )
 
             # Generate with references
-            saved_path = service.generate_image(
-                prompt=scene_prompt,
-                reference_image_paths=ref_image_paths,  # Sending references!
-                output_path=img_path,
-            )
-
-            if saved_path:
+            try:
+                saved_path = service.generate_image(
+                    prompt=scene_prompt,
+                    output_path=img_path,
+                    reference_image_paths=ref_image_paths,  # Sending references!
+                )
                 scene.image_url = saved_path
+            except Exception as e:
+                console.print(
+                    f"[yellow]Warning: Failed to generate scene {i}: {e}[/yellow]",
+                )
 
             progress.advance(task)
 
@@ -144,8 +148,20 @@ def generate(
     ),
 ) -> None:
     """Transform audio into a synchronized visual storyboard using Gemini."""
+    # Load environment variables
+    load_dotenv()
+
     if not audio_file.exists():
         console.print(f"[bold red]Error:[/bold red] File {audio_file} not found.")
+        raise typer.Exit(code=1)
+
+    # Validate audio file extension
+    valid_extensions = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+    if audio_file.suffix.lower() not in valid_extensions:
+        console.print(
+            f"[bold red]Error:[/bold red] Unsupported audio format: {audio_file.suffix}. "
+            f"Supported: {', '.join(sorted(valid_extensions))}",
+        )
         raise typer.Exit(code=1)
 
     # Setup directories

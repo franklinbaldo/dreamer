@@ -34,20 +34,7 @@ class GeminiService:
         audio_path: Path,
         config: AnalysisConfig | None = None,
     ) -> Storyboard:
-        """Phase 1: Analyzes audio to create a textual production design and storyboard.
-
-        Args:
-            audio_path: Path to the audio file.
-            config: Configuration for analysis.
-
-        Returns:
-            Storyboard: The generated storyboard.
-
-        Raises:
-            RuntimeError: If the analysis fails.
-            ValueError: If audio format is not supported.
-
-        """
+        """Phase 1: Analyzes audio to create a textual production design and storyboard."""
         if config is None:
             config = AnalysisConfig()
         # Read and encode audio
@@ -57,10 +44,6 @@ class GeminiService:
         # Determine mime type
         mime_type, _ = mimetypes.guess_type(audio_path)
         if not mime_type or not mime_type.startswith("audio/"):
-            # Fallback based on extension or error out if critical
-            # For now, let's trust the user if it looks like audio,
-            # but 'audio/wav' as safe default
-            # The prompt suggested validating formats.
             if audio_path.suffix.lower() == ".mp3":
                 mime_type = "audio/mpeg"
             else:
@@ -92,18 +75,16 @@ class GeminiService:
                 ],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    response_schema=Storyboard,  # Pass the Pydantic class directly
+                    response_schema=Storyboard,
                     temperature=config.temperature,
                 ),
             )
 
-            storyboard = None
             if hasattr(response, "parsed") and response.parsed:
                 storyboard = response.parsed
             else:
                 storyboard = Storyboard.model_validate_json(response.text)
 
-            # Sort scenes by timestamp defensively
             if storyboard and storyboard.scenes:
                 storyboard.scenes.sort(key=lambda s: s.timestamp)
 
@@ -114,7 +95,6 @@ class GeminiService:
         return storyboard
 
     def _save_image(self, data: bytes, output_path: Path) -> str:
-        # Create directory if it doesn't exist
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("wb") as f:
             f.write(data)
@@ -151,21 +131,7 @@ class GeminiService:
         reference_image_paths: list[str] | None = None,
         output_path: Path | None = None,
     ) -> str | None:
-        """Generate an image using the Gemini API.
-
-        Args:
-            prompt: Text prompt for image generation.
-            config: Configuration for image generation.
-            reference_image_paths: List of paths to reference images.
-            output_path: Path to save the generated image.
-
-        Returns:
-            str: The path to the saved image.
-
-        Raises:
-            RetryError: If generation fails after retries.
-
-        """
+        """Generate an image using the Gemini API."""
         if config is None:
             config = ImageGenerationConfig()
         if reference_image_paths is None:
@@ -174,7 +140,7 @@ class GeminiService:
 
         for ref_path_str in reference_image_paths:
             ref_path = Path(ref_path_str)
-            if ref_path_str and ref_path.exists():
+            if ref_path.exists():
                 with ref_path.open("rb") as f:
                     img_data = f.read()
                 parts.append(
@@ -184,8 +150,6 @@ class GeminiService:
         parts.append(types.Part.from_text(text=prompt))
 
         try:
-            # Use tenacity Retrying context manager for dynamic retry config
-            # reraise=False means it raises RetryError on failure
             retryer = Retrying(
                 stop=stop_after_attempt(config.retries + 1),
                 wait=wait_exponential(
@@ -194,13 +158,13 @@ class GeminiService:
                     max=config.max_wait,
                 ),
                 retry=retry_if_exception_type(Exception),
-                reraise=False,
+                reraise=True,
             )
 
             def _attempt() -> str:
                 return self._generate_image_attempt(config.model, parts, output_path)
 
-        def _attempt() -> str:
-            return self._generate_image_attempt(model_name, parts, output_path)
-
-        return retryer(_attempt)
+            return retryer(_attempt)
+        except Exception as e:
+            msg = f"Failed to generate image after retries: {e}"
+            raise RuntimeError(msg) from e

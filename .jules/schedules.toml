@@ -1,0 +1,9 @@
+# Jules Agent Schedule Registry for Dreamer
+cycle = [
+    "curator",      # 🎭 UX Evaluation
+    "refactor"      # 🔧 Code Improvements
+]
+
+[schedules]
+curator      = "0 0 * * *"
+refactor     = "0 2 * * *"

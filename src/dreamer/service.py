@@ -29,19 +29,41 @@ class GeminiService:
             raise ValueError(msg)
         self.client = genai.Client(api_key=api_key)
 
-    def analyze_audio(self, audio_path: Path) -> Storyboard:
+    def analyze_audio(
+        self,
+        audio_path: Path,
+        model: str = "gemini-1.5-pro",
+    ) -> Storyboard:
         """Phase 1: Analyzes audio to create a textual production design and storyboard.
 
         Args:
             audio_path: Path to the audio file.
+            model: Model to use for analysis.
 
         Returns:
             Storyboard: The generated storyboard.
 
         Raises:
             RuntimeError: If the analysis fails.
+            ValueError: If audio format is not supported.
 
         """
+        if not audio_path.exists():
+            msg = f"Audio file not found: {audio_path}"
+            raise FileNotFoundError(msg)
+
+        # Determine mime type
+        mime_type, _ = mimetypes.guess_type(audio_path)
+        if not mime_type or not mime_type.startswith("audio/"):
+            # Fallback for common extensions if mimetypes fails or returns None
+            if audio_path.suffix.lower() == ".mp3":
+                mime_type = "audio/mpeg"
+            elif audio_path.suffix.lower() == ".wav":
+                mime_type = "audio/wav"
+            else:
+                msg = f"Unsupported or unknown audio format: {audio_path.suffix}"
+                raise ValueError(msg)
+
         # Read and encode audio
         with audio_path.open("rb") as f:
             audio_data = f.read()
@@ -70,7 +92,7 @@ class GeminiService:
 
         try:
             response = self.client.models.generate_content(
-                model="gemini-1.5-pro",  # Using 1.5 Pro for best reasoning on audio
+                model=model,
                 contents=[
                     types.Content(
                         parts=[
@@ -81,21 +103,30 @@ class GeminiService:
                 ],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    response_schema=Storyboard,  # Pass the Pydantic class directly
+                    response_schema=Storyboard,
                     temperature=0.4,
                 ),
             )
 
-            # The SDK handles parsing into the Pydantic model automatically
-            # if supported, otherwise we parse the text.
+            storyboard = None
             if hasattr(response, "parsed") and response.parsed:
-                return response.parsed
-            return Storyboard.model_validate_json(response.text)
+                storyboard = response.parsed
+            else:
+                storyboard = Storyboard.model_validate_json(response.text)
+
+            # Sort scenes by timestamp defensively
+            if storyboard and storyboard.scenes:
+                storyboard.scenes.sort(key=lambda s: s.timestamp)
+
         except Exception as e:
             msg = f"Failed to interpret audio storyboard: {e}"
             raise RuntimeError(msg) from e
 
+        return storyboard
+
     def _save_image(self, data: bytes, output_path: Path) -> str:
+        # Create directory if it doesn't exist
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("wb") as f:
             f.write(data)
         return str(output_path)
@@ -115,7 +146,6 @@ class GeminiService:
         if response.bytes:
             return self._save_image(response.bytes, output_path)
 
-        # Fallback for some models that return base64 inside inlineData
         if response.candidates and response.candidates[0].content.parts:
             part = response.candidates[0].content.parts[0]
             if part.inline_data:
@@ -134,9 +164,6 @@ class GeminiService:
     ) -> str:
         """Generate an image using the Gemini API.
 
-        If reference_image_paths are provided, they are sent as context to the model
-        (Requires a model that supports Image-to-Image or Multimodal input).
-
         Args:
             prompt: Text prompt for image generation.
             output_path: Path to save the generated image.
@@ -154,7 +181,6 @@ class GeminiService:
             reference_image_paths = []
         parts = []
 
-        # Load reference images
         for ref_path_str in reference_image_paths:
             ref_path = Path(ref_path_str)
             if ref_path_str and ref_path.exists():
@@ -165,7 +191,7 @@ class GeminiService:
                 )
 
         parts.append(types.Part.from_text(text=prompt))
-        model_name = "imagen-3.0-generate-001"
+        model_name = "gemini-2.5-flash-image"
 
         # Use tenacity Retrying context manager for dynamic retry config
         retryer = Retrying(

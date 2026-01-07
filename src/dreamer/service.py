@@ -183,24 +183,20 @@ class GeminiService:
 
         parts.append(types.Part.from_text(text=prompt))
 
-        try:
-            # Use tenacity Retrying context manager for dynamic retry config
-            # reraise=False means it raises RetryError on failure
-            retryer = Retrying(
-                stop=stop_after_attempt(config.retries + 1),
-                wait=wait_exponential(
-                    multiplier=2,
-                    min=config.min_wait,
-                    max=config.max_wait,
-                ),
-                retry=retry_if_exception_type(Exception),
-                reraise=False,
-            )
-
-            def _attempt() -> str:
-                return self._generate_image_attempt(config.model, parts, output_path)
+        # Use tenacity Retrying context manager for dynamic retry config
+        # reraise=True so the underlying exception is raised after retries
+        retryer = Retrying(
+            stop=stop_after_attempt(config.retries + 1),
+            wait=wait_exponential(
+                multiplier=2,
+                min=config.min_wait,
+                max=config.max_wait,
+            ),
+            retry=retry_if_exception_type(Exception),
+            reraise=True,
+        )
 
         def _attempt() -> str:
-            return self._generate_image_attempt(model_name, parts, output_path)
+            return self._generate_image_attempt(config.model, parts, output_path)
 
         return retryer(_attempt)

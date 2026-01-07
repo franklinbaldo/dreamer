@@ -48,7 +48,7 @@ def test_generate_invalid_audio_extension():
     with runner.isolated_filesystem():
         Path("test.txt").write_text("dummy audio")
 
-        result = runner.invoke(app, ["test.txt"])
+        result = runner.invoke(app, ["analyze", "test.txt"])
 
         assert result.exit_code == 1
         assert "Unsupported audio format: .txt" in result.stdout
@@ -70,14 +70,14 @@ def test_generate_element_generation_failure(mock_service, dummy_storyboard):
         # Create valid audio file
         Path("audio.mp3").write_bytes(b"mp3")
 
-        result = runner.invoke(app, ["audio.mp3"])
+        result = runner.invoke(app, ["analyze", "audio.mp3", "--api-key", "key"])
 
         assert result.exit_code == 0
         assert (
             "Warning: Failed to generate element 'Hero': API Error 1" in result.stdout
         )
         # Ensure process continued
-        assert "Production Complete" in result.stdout
+        assert "Storyboard saved to" in result.stdout
 
 def test_generate_scene_generation_failure(mock_service, dummy_storyboard):
     # Setup mock service
@@ -95,11 +95,11 @@ def test_generate_scene_generation_failure(mock_service, dummy_storyboard):
     with runner.isolated_filesystem():
         Path("audio.mp3").write_bytes(b"mp3")
 
-        result = runner.invoke(app, ["audio.mp3"])
+        result = runner.invoke(app, ["analyze", "audio.mp3", "--api-key", "key"])
 
         assert result.exit_code == 0
         assert "Warning: Failed to generate scene 0: API Error Scene" in result.stdout
-        assert "Production Complete" in result.stdout
+        assert "Storyboard saved to" in result.stdout
 
 def test_service_mime_type_fallback(tmp_path):
     # Mock mimetypes.guess_type to return None

@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
-from tenacity import RetryError
 
 from .models import Storyboard
 from .service import GeminiService
@@ -60,9 +59,13 @@ def _generate_elements(
         task = progress.add_task("Generating References...", total=len(elements))
 
         for el in elements:
-            safe_name = "".join(
-                [c for c in el.name if c.isalnum() or c in (" ", "-", "_")],
-            ).strip().replace(" ", "_")
+            safe_name = (
+                "".join(
+                    [c for c in el.name if c.isalnum() or c in (" ", "-", "_")],
+                )
+                .strip()
+                .replace(" ", "_")
+            )
             img_path = elements_dir / f"{safe_name}.png"
 
             prompt = (
@@ -78,9 +81,10 @@ def _generate_elements(
                 saved_path = service.generate_image(prompt, output_path=img_path)
                 el.image_url = saved_path
                 ref_image_paths.append(saved_path)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 console.print(
-                    f"[yellow]Warning: Failed to generate element '{el.name}': {e}[/yellow]",
+                    f"[yellow]Warning: Failed to generate element "
+                    f"'{el.name}': {e}[/yellow]",
                 )
 
             progress.advance(task)
@@ -126,7 +130,7 @@ def _render_scenes(
                     reference_image_paths=ref_image_paths,  # Sending references!
                 )
                 scene.image_url = saved_path
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 console.print(
                     f"[yellow]Warning: Failed to generate scene {i}: {e}[/yellow]",
                 )
@@ -159,7 +163,8 @@ def generate(
     valid_extensions = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
     if audio_file.suffix.lower() not in valid_extensions:
         console.print(
-            f"[bold red]Error:[/bold red] Unsupported audio format: {audio_file.suffix}. "
+            f"[bold red]Error:[/bold red] Unsupported audio format: "
+            f"{audio_file.suffix}. "
             f"Supported: {', '.join(sorted(valid_extensions))}",
         )
         raise typer.Exit(code=1)

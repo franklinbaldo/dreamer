@@ -67,7 +67,7 @@ class GeminiService:
 
         try:
             response = self.client.models.generate_content(
-                model="gemini-3-pro-preview",  # Using 3 Pro Preview for best reasoning on audio
+                model="gemini-2.5-flash",  # Using 2.5 Flash for audio analysis
                 contents=[
                     types.Content(
                         parts=[
@@ -160,9 +160,7 @@ class GeminiService:
                 )
 
         parts.append(types.Part.from_text(text=prompt))
-        # Using Gemini 3 Pro Image Preview as it supports image inputs (multimodal)
-        # which preserves the reference_image_paths functionality.
-        model_name = "gemini-3-pro-image-preview"
+        model_name = "imagen-3.0-generate-001"
 
         try:
             # Use tenacity Retrying context manager for dynamic retry config

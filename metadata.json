@@ -1,0 +1,5 @@
+{
+  "name": "SonicVision Studio",
+  "description": "Transform audio into a synchronized visual journey. Upload an MP3, and Gemini will analyze the content to generate a sequence of AI-generated images that play in sync with your audio.",
+  "requestFramePermissions": []
+}

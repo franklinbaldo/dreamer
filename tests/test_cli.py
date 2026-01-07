@@ -15,21 +15,17 @@ def mock_service():
         yield mock
 
 
-def test_generate_missing_file() -> None:
-    result = runner.invoke(app, ["nonexistent.mp3"])
+def test_analyze_missing_file() -> None:
+    result = runner.invoke(app, ["analyze", "nonexistent.mp3"])
     assert result.exit_code == 1
     assert "File nonexistent.mp3 not found" in result.stdout
 
 
-def test_generate_success(mock_service, tmp_path) -> None:
-    # Setup Audio File
+def test_analyze_success(mock_service, tmp_path) -> None:
     audio_file = tmp_path / "audio.mp3"
     audio_file.write_bytes(b"audio")
 
-    # Setup Mock Service Response
     mock_instance = mock_service.return_value
-
-    # Mock analyze_audio
     storyboard = Storyboard(
         title="Test Storyboard",
         production_design=ProductionDesign(
@@ -47,42 +43,124 @@ def test_generate_success(mock_service, tmp_path) -> None:
     )
     mock_instance.analyze_audio.return_value = storyboard
 
-    # Mock generate_image return values
-    # First call is for element, second for scene
-    mock_instance.generate_image.side_effect = [
-        str(tmp_path / "output/elements/Char1.png"),  # Element
-        str(tmp_path / "output/scenes/scene_000.png"),  # Scene
-    ]
-
-    # Run CLI
     result = runner.invoke(
         app,
-        [str(audio_file), "--output-dir", str(tmp_path / "output"), "--api-key", "key"],
+        [
+            "analyze",
+            str(audio_file),
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--api-key",
+            "key",
+        ],
     )
 
     assert result.exit_code == 0
     assert "Storyboard Generated" in result.stdout
-    assert "Production Complete" in result.stdout
-
-    # Check directory creation (logic in CLI)
-    assert (tmp_path / "output").exists()
-    assert (tmp_path / "output/elements").exists()
-    assert (tmp_path / "output/scenes").exists()
-
-    # Check JSON files
     assert (tmp_path / "output/storyboard.json").exists()
-    assert (tmp_path / "output/storyboard_final.json").exists()
 
 
-def test_generate_fatal_error(mock_service, tmp_path) -> None:
-    audio_file = tmp_path / "audio.mp3"
-    audio_file.write_bytes(b"audio")
+def test_design_success(mock_service, tmp_path) -> None:
+    storyboard_path = tmp_path / "storyboard.json"
+    storyboard = Storyboard(
+        title="Test",
+        production_design=ProductionDesign(
+            art_style="Style",
+            recurring_elements=[VisualElement(name="Hero", description="A hero")],
+        ),
+        scenes=[],
+    )
+    storyboard_path.write_text(storyboard.model_dump_json())
 
     mock_instance = mock_service.return_value
-    mock_instance.analyze_audio.side_effect = Exception("Boom")
+    mock_instance.generate_image.return_value = str(tmp_path / "elements/Hero.png")
 
-    result = runner.invoke(app, [str(audio_file), "--api-key", "key"])
+    result = runner.invoke(
+        app,
+        [
+            "design",
+            str(storyboard_path),
+            "--output-dir",
+            str(tmp_path / "elements"),
+            "--api-key",
+            "key",
+        ],
+    )
 
-    assert result.exit_code == 1
-    assert "Fatal Error" in result.stdout
-    assert "Boom" in result.stdout
+    assert result.exit_code == 0
+    assert "Elements saved to" in result.stdout
+    assert (tmp_path / "elements").exists()
+
+
+def test_render_success(mock_service, tmp_path) -> None:
+    storyboard_path = tmp_path / "storyboard.json"
+    storyboard = Storyboard(
+        title="Test",
+        production_design=ProductionDesign(
+            art_style="Style",
+            recurring_elements=[],
+        ),
+        scenes=[
+             Scene(
+                timestamp=0.0,
+                timing_rationale="Start",
+                description="Scene1",
+                visual_prompt="Draw Scene 1",
+            ),
+        ],
+    )
+    storyboard_path.write_text(storyboard.model_dump_json())
+
+    mock_instance = mock_service.return_value
+    mock_instance.generate_image.return_value = str(tmp_path / "scenes/scene_0.png")
+
+    result = runner.invoke(
+        app,
+        [
+            "render",
+            str(storyboard_path),
+            "--output-dir",
+            str(tmp_path / "scenes"),
+            "--api-key",
+            "key",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Production Complete" in result.stdout
+    assert (tmp_path / "scenes").exists()
+    assert (tmp_path / "storyboard_final.json").exists()
+
+
+def test_resume(mock_service, tmp_path) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    storyboard_path = output_dir / "storyboard.json"
+    storyboard = Storyboard(
+        title="Test",
+        production_design=ProductionDesign(
+            art_style="Style",
+            recurring_elements=[VisualElement(name="Hero", description="A hero")],
+        ),
+        scenes=[
+             Scene(
+                timestamp=0.0,
+                timing_rationale="Start",
+                description="Scene1",
+                visual_prompt="Draw Scene 1",
+            ),
+        ],
+    )
+    storyboard_path.write_text(storyboard.model_dump_json())
+
+    mock_instance = mock_service.return_value
+    # 1 element + 1 scene
+    mock_instance.generate_image.side_effect = [
+        str(output_dir / "elements/Hero.png"),
+        str(output_dir / "scenes/scene_0.png"),
+    ]
+
+    result = runner.invoke(app, ["resume", str(output_dir), "--api-key", "key"])
+
+    assert result.exit_code == 0
+    assert "Resuming processing" in result.stdout

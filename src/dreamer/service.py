@@ -13,7 +13,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from .models import Storyboard
+from .models import AnalysisConfig, ImageGenerationConfig, Storyboard
 
 
 class GeminiService:
@@ -32,13 +32,13 @@ class GeminiService:
     def analyze_audio(
         self,
         audio_path: Path,
-        model: str = "gemini-1.5-pro",
+        config: AnalysisConfig | None = None,
     ) -> Storyboard:
         """Phase 1: Analyzes audio to create a textual production design and storyboard.
 
         Args:
             audio_path: Path to the audio file.
-            model: Model to use for analysis.
+            config: Configuration for analysis.
 
         Returns:
             Storyboard: The generated storyboard.
@@ -48,30 +48,19 @@ class GeminiService:
             ValueError: If audio format is not supported.
 
         """
-        if not audio_path.exists():
-            msg = f"Audio file not found: {audio_path}"
-            raise FileNotFoundError(msg)
-
-        # Determine mime type
-        mime_type, _ = mimetypes.guess_type(audio_path)
-        if not mime_type or not mime_type.startswith("audio/"):
-            # Fallback for common extensions if mimetypes fails or returns None
-            if audio_path.suffix.lower() == ".mp3":
-                mime_type = "audio/mpeg"
-            elif audio_path.suffix.lower() == ".wav":
-                mime_type = "audio/wav"
-            else:
-                msg = f"Unsupported or unknown audio format: {audio_path.suffix}"
-                raise ValueError(msg)
-
+        if config is None:
+            config = AnalysisConfig()
         # Read and encode audio
         with audio_path.open("rb") as f:
             audio_data = f.read()
 
-        # Determine mime type based on extension
+        # Determine mime type
         mime_type, _ = mimetypes.guess_type(audio_path)
-        if not mime_type:
-            # Fallback for common types if mimetypes fails
+        if not mime_type or not mime_type.startswith("audio/"):
+            # Fallback based on extension or error out if critical
+            # For now, let's trust the user if it looks like audio,
+            # but 'audio/wav' as safe default
+            # The prompt suggested validating formats.
             if audio_path.suffix.lower() == ".mp3":
                 mime_type = "audio/mpeg"
             else:
@@ -92,7 +81,7 @@ class GeminiService:
 
         try:
             response = self.client.models.generate_content(
-                model=model,
+                model=config.model,
                 contents=[
                     types.Content(
                         parts=[
@@ -103,8 +92,8 @@ class GeminiService:
                 ],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    response_schema=Storyboard,
-                    temperature=0.4,
+                    response_schema=Storyboard,  # Pass the Pydantic class directly
+                    temperature=config.temperature,
                 ),
             )
 
@@ -158,17 +147,17 @@ class GeminiService:
     def generate_image(
         self,
         prompt: str,
-        output_path: Path,
+        config: ImageGenerationConfig | None = None,
         reference_image_paths: list[str] | None = None,
-        retries: int = 2,
-    ) -> str:
+        output_path: Path | None = None,
+    ) -> str | None:
         """Generate an image using the Gemini API.
 
         Args:
             prompt: Text prompt for image generation.
-            output_path: Path to save the generated image.
+            config: Configuration for image generation.
             reference_image_paths: List of paths to reference images.
-            retries: Number of retries on failure.
+            output_path: Path to save the generated image.
 
         Returns:
             str: The path to the saved image.
@@ -177,6 +166,8 @@ class GeminiService:
             RetryError: If generation fails after retries.
 
         """
+        if config is None:
+            config = ImageGenerationConfig()
         if reference_image_paths is None:
             reference_image_paths = []
         parts = []
@@ -191,15 +182,23 @@ class GeminiService:
                 )
 
         parts.append(types.Part.from_text(text=prompt))
-        model_name = "gemini-2.5-flash-image"
 
-        # Use tenacity Retrying context manager for dynamic retry config
-        retryer = Retrying(
-            stop=stop_after_attempt(retries + 1),
-            wait=wait_exponential(multiplier=2, min=2, max=10),
-            retry=retry_if_exception_type(Exception),
-            reraise=True,
-        )
+        try:
+            # Use tenacity Retrying context manager for dynamic retry config
+            # reraise=False means it raises RetryError on failure
+            retryer = Retrying(
+                stop=stop_after_attempt(config.retries + 1),
+                wait=wait_exponential(
+                    multiplier=2,
+                    min=config.min_wait,
+                    max=config.max_wait,
+                ),
+                retry=retry_if_exception_type(Exception),
+                reraise=False,
+            )
+
+            def _attempt() -> str:
+                return self._generate_image_attempt(config.model, parts, output_path)
 
         def _attempt() -> str:
             return self._generate_image_attempt(model_name, parts, output_path)

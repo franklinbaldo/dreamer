@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-from .models import Storyboard
+from .models import AnalysisConfig, ImageGenerationConfig, Storyboard
 from .service import GeminiService
 
 # Setup Typer and Console
@@ -18,7 +18,11 @@ app = typer.Typer(help="SonicVision Studio CLI - Audio to Visual Storyboard")
 console = Console()
 
 
-def _analyze_audio(service: GeminiService, audio_file: Path) -> Storyboard:
+def _analyze_audio(
+    service: GeminiService,
+    audio_file: Path,
+    config: AnalysisConfig,
+) -> Storyboard:
     console.rule("[bold blue]Phase 1: Audio Analysis")
     with Progress(
         SpinnerColumn(),
@@ -26,7 +30,10 @@ def _analyze_audio(service: GeminiService, audio_file: Path) -> Storyboard:
         console=console,
     ) as progress:
         task = progress.add_task("Listening and Storyboarding...", total=None)
-        storyboard = service.analyze_audio(audio_file)
+        storyboard = service.analyze_audio(
+            audio_file,
+            config=config,
+        )
         progress.update(task, completed=100)
 
     console.print(
@@ -45,6 +52,7 @@ def _generate_elements(
     service: GeminiService,
     storyboard: Storyboard,
     elements_dir: Path,
+    config: ImageGenerationConfig,
 ) -> list[str]:
     console.rule("[bold purple]Phase 2: Character & Element Design")
 
@@ -79,8 +87,13 @@ def _generate_elements(
             )
 
             # Generate
-            try:
-                saved_path = service.generate_image(prompt, output_path=img_path)
+            saved_path = service.generate_image(
+                prompt,
+                output_path=img_path,
+                config=config,
+            )
+
+            if saved_path:
                 el.image_url = saved_path
                 ref_image_paths.append(saved_path)
             except Exception as e:  # noqa: BLE001
@@ -98,6 +111,7 @@ def _render_scenes(
     storyboard: Storyboard,
     scenes_dir: Path,
     ref_image_paths: list[str],
+    config: ImageGenerationConfig,
 ) -> None:
     console.rule("[bold cyan]Phase 3: Scene Production")
 
@@ -120,12 +134,14 @@ def _render_scenes(
     return GeminiService(api_key)
 
             # Generate with references
-            try:
-                saved_path = service.generate_image(
-                    prompt=scene_prompt,
-                    output_path=img_path,
-                    reference_image_paths=ref_image_paths,  # Sending references!
-                )
+            saved_path = service.generate_image(
+                prompt=scene_prompt,
+                reference_image_paths=ref_image_paths,  # Sending references!
+                output_path=img_path,
+                config=config,
+            )
+
+            if saved_path:
                 scene.image_url = saved_path
             except Exception as e:  # noqa: BLE001
                 console.print(
@@ -157,6 +173,23 @@ def analyze(
         envvar="GEMINI_API_KEY",
         help="Google Gemini API Key",
     ),
+    analysis_model: str = typer.Option(
+        "gemini-1.5-pro",
+        "--analysis-model",
+        help="Gemini model for audio analysis",
+    ),
+    temperature: float = typer.Option(
+        0.4,
+        help="Temperature for creative analysis",
+    ),
+    image_model: str = typer.Option(
+        "imagen-3.0-generate-001",
+        "--image-model",
+        help="Model for image generation",
+    ),
+    retries: int = typer.Option(2, help="Number of retries for image generation"),
+    min_wait: int = typer.Option(2, help="Minimum wait time between retries"),
+    max_wait: int = typer.Option(10, help="Maximum wait time between retries"),
 ) -> None:
     """Transform audio into a synchronized visual storyboard using Gemini."""
     # Load environment variables
@@ -181,30 +214,31 @@ def analyze(
     storyboard_path = output_dir / "storyboard.json"
 
     try:
-        service = _get_service(api_key)
+        service = GeminiService(api_key)
 
-        console.rule("[bold blue]Phase 1: Audio Analysis")
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Listening and Storyboarding...", total=None)
-            storyboard = service.analyze_audio(audio_file, model=model)
-            progress.update(task, completed=100)
+        analysis_config = AnalysisConfig(model=analysis_model, temperature=temperature)
+        image_config = ImageGenerationConfig(
+            model=image_model,
+            retries=retries,
+            min_wait=min_wait,
+            max_wait=max_wait,
+        )
+
+        storyboard = _analyze_audio(
+            service,
+            audio_file,
+            config=analysis_config,
+        )
 
         # Save JSON metadata
         with storyboard_path.open("w") as f:
             f.write(storyboard.model_dump_json(indent=2))
 
-        console.print(
-            Panel(
-                f"[bold]Title:[/bold] {storyboard.title}\n"
-                f"[bold]Style:[/bold] {storyboard.production_design.art_style}\n"
-                f"[bold]Scenes:[/bold] {len(storyboard.scenes)} detected",
-                title="Storyboard Generated",
-                border_style="green",
-            ),
+        ref_image_paths = _generate_elements(
+            service,
+            storyboard,
+            output_dir / "elements",
+            config=image_config,
         )
         console.print(f"Saved to: {storyboard_path}")
 
@@ -212,85 +246,13 @@ def analyze(
         console.print(f"[bold red]Fatal Error:[/bold red] {e}")
         raise typer.Exit(code=1) from e
 
-
-@app.command()
-def design(
-    storyboard_path: Path = typer.Argument(
-        ...,
-        help="Path to the storyboard.json file",
-    ),
-    output_dir: Path = typer.Option(
-        None,
-        help="Directory to save elements (defaults to storyboard dir / elements)",
-    ),
-    image_model: str = typer.Option(
-        "imagen-3.0-generate-001",
-        help="Model for image generation",
-    ),
-    api_key: str | None = typer.Option(
-        None,
-        envvar="GEMINI_API_KEY",
-        help="Google Gemini API Key",
-    ),
-) -> None:
-    """Phase 2: Generate character and element designs."""
-    if not storyboard_path.exists():
-        console.print(f"[bold red]Error:[/bold red] File {storyboard_path} not found.")
-        raise typer.Exit(code=1)
-
-    if output_dir is None:
-        output_dir = storyboard_path.parent / "elements"
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        service = _get_service(api_key)
-
-        with storyboard_path.open("r") as f:
-             storyboard = Storyboard.model_validate_json(f.read())
-
-        console.rule("[bold purple]Phase 2: Character & Element Design")
-
-        elements = storyboard.production_design.recurring_elements
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.percentage:>3.0f}%"),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Generating References...", total=len(elements))
-
-            for el in elements:
-                safe_name = _safe_filename(el.name)
-                img_path = output_dir / f"{safe_name}.png"
-
-                # Check if exists (resume/skip)
-                if img_path.exists():
-                    el.image_url = str(img_path)
-                    progress.advance(task)
-                    continue
-
-                prompt = (
-                    "Production Design: Element Reference Sheet. "
-                    f"Style: {storyboard.production_design.art_style}. "
-                    f"Subject: {el.name}. "
-                    f"Description: {el.description}. "
-                    "Show only this subject against a neutral background for reference."
-                )
-
-                # Generate
-                saved_path = service.generate_image(
-                    prompt,
-                    output_path=img_path,
-                    model=image_model,
-                )
-
-                if saved_path:
-                    el.image_url = saved_path
-
-                progress.advance(task)
+        _render_scenes(
+            service,
+            storyboard,
+            output_dir / "scenes",
+            ref_image_paths,
+            config=image_config,
+        )
 
         # Update JSON with image paths
         with storyboard_path.open("w") as f:

@@ -37,6 +37,22 @@ class Storyboard(BaseModel):
 
     @model_validator(mode="after")
     def sort_scenes(self) -> "Storyboard":
-        """Ensure scenes are sorted by timestamp."""
+        """Sort scenes by timestamp."""
         self.scenes.sort(key=lambda s: s.timestamp)
         return self
+
+
+class AnalysisConfig(BaseModel):
+    """Configuration for audio analysis."""
+
+    model: str = "gemini-1.5-pro"
+    temperature: float = 0.4
+
+
+class ImageGenerationConfig(BaseModel):
+    """Configuration for image generation."""
+
+    model: str = "imagen-3.0-generate-001"
+    retries: int = 2
+    min_wait: int = 2
+    max_wait: int = 10

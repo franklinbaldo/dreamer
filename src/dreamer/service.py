@@ -185,6 +185,7 @@ class GeminiService:
                 )
 
         parts.append(types.Part.from_text(text=prompt))
+        model_name = "gemini-2.5-flash-image"
 
         try:
             # Only retry on standard exceptions, letting generic ones bubble if needed?

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.dreamer.models import ProductionDesign, Storyboard
+from src.dreamer.models import ImageGenerationConfig, ProductionDesign, Storyboard
 from src.dreamer.service import GeminiService
 
 
@@ -177,13 +177,14 @@ def test_generate_image_failure_after_retries(mock_genai_client):
     mock_client_instance.models.generate_content.side_effect = Exception("Fail")
 
     service = GeminiService(api_key="key")
+    config = ImageGenerationConfig(retries=1)
 
     # To speed up test, patch time.sleep
     with patch("time.sleep"), pytest.raises(Exception, match="Fail"):
         service.generate_image(
             "prompt",
             output_path=Path("out.png"),
-            retries=1,
+            config=config,
         )
 
 
@@ -196,6 +197,7 @@ def test_generate_image_fallback_missing_candidates(mock_genai_client, tmp_path)
     mock_client_instance.models.generate_content.return_value = mock_response
 
     service = GeminiService(api_key="key")
+    config = ImageGenerationConfig(retries=0)
 
     # This should fail after retries because it raises
     # RuntimeError "No image data in response"
@@ -207,7 +209,7 @@ def test_generate_image_fallback_missing_candidates(mock_genai_client, tmp_path)
         service.generate_image(
             "prompt",
             output_path=Path("out.png"),
-            retries=0,
+            config=config,
         )
 
 

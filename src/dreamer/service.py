@@ -6,9 +6,7 @@ from pathlib import Path
 
 from google import genai
 from google.genai import types
-from rich.console import Console
 from tenacity import (
-    RetryError,
     Retrying,
     retry_if_exception_type,
     stop_after_attempt,
@@ -16,8 +14,6 @@ from tenacity import (
 )
 
 from .models import AnalysisConfig, ImageGenerationConfig, Storyboard
-
-console = Console()
 
 
 class GeminiService:
@@ -49,6 +45,7 @@ class GeminiService:
 
         Raises:
             RuntimeError: If the analysis fails.
+            ValueError: If audio format is not supported.
 
         """
         if config is None:
@@ -100,16 +97,25 @@ class GeminiService:
                 ),
             )
 
-            # The SDK handles parsing into the Pydantic model automatically
-            # if supported, otherwise we parse the text.
+            storyboard = None
             if hasattr(response, "parsed") and response.parsed:
-                return response.parsed
-            return Storyboard.model_validate_json(response.text)
+                storyboard = response.parsed
+            else:
+                storyboard = Storyboard.model_validate_json(response.text)
+
+            # Sort scenes by timestamp defensively
+            if storyboard and storyboard.scenes:
+                storyboard.scenes.sort(key=lambda s: s.timestamp)
+
         except Exception as e:
             msg = f"Failed to interpret audio storyboard: {e}"
             raise RuntimeError(msg) from e
 
+        return storyboard
+
     def _save_image(self, data: bytes, output_path: Path) -> str:
+        # Create directory if it doesn't exist
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("wb") as f:
             f.write(data)
         return str(output_path)
@@ -129,7 +135,6 @@ class GeminiService:
         if response.bytes:
             return self._save_image(response.bytes, output_path)
 
-        # Fallback for some models that return base64 inside inlineData
         if response.candidates and response.candidates[0].content.parts:
             part = response.candidates[0].content.parts[0]
             if part.inline_data:
@@ -138,7 +143,6 @@ class GeminiService:
 
         msg = "No image data in response"
         raise RuntimeError(msg)
-        return ""  # Should be unreachable
 
     def generate_image(
         self,
@@ -149,9 +153,6 @@ class GeminiService:
     ) -> str | None:
         """Generate an image using the Gemini API.
 
-        If reference_image_paths are provided, they are sent as context to the model
-        (Requires a model that supports Image-to-Image or Multimodal input).
-
         Args:
             prompt: Text prompt for image generation.
             config: Configuration for image generation.
@@ -159,7 +160,10 @@ class GeminiService:
             output_path: Path to save the generated image.
 
         Returns:
-            str | None: The path to the saved image or None if failed.
+            str: The path to the saved image.
+
+        Raises:
+            RetryError: If generation fails after retries.
 
         """
         if config is None:
@@ -168,7 +172,6 @@ class GeminiService:
             reference_image_paths = []
         parts = []
 
-        # Load reference images
         for ref_path_str in reference_image_paths:
             ref_path = Path(ref_path_str)
             if ref_path_str and ref_path.exists():
@@ -197,13 +200,7 @@ class GeminiService:
             def _attempt() -> str:
                 return self._generate_image_attempt(config.model, parts, output_path)
 
-            return retryer(_attempt)
+        def _attempt() -> str:
+            return self._generate_image_attempt(model_name, parts, output_path)
 
-        except RetryError as e:
-            # RetryError wraps the last exception
-            original_exception = e.last_attempt.exception()
-            console.print(
-                f"[yellow]Warning: Failed to generate image after retries: "
-                f"{original_exception}[/yellow]",
-            )
-            return None
+        return retryer(_attempt)

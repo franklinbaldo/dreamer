@@ -179,14 +179,12 @@ def test_generate_image_failure_after_retries(mock_genai_client):
     service = GeminiService(api_key="key")
 
     # To speed up test, patch time.sleep
-    with patch("time.sleep"):
-        result = service.generate_image(
+    with patch("time.sleep"), pytest.raises(Exception, match="Fail"):
+        service.generate_image(
             "prompt",
             output_path=Path("out.png"),
             retries=1,
         )
-
-    assert result is None
 
 
 def test_generate_image_fallback_missing_candidates(mock_genai_client, tmp_path):
@@ -202,14 +200,15 @@ def test_generate_image_fallback_missing_candidates(mock_genai_client, tmp_path)
     # This should fail after retries because it raises
     # RuntimeError "No image data in response"
     # and then retries loop catches it.
-    with patch("time.sleep"):
-        result = service.generate_image(
+    with (
+        patch("time.sleep"),
+        pytest.raises(RuntimeError, match="No image data in response"),
+    ):
+        service.generate_image(
             "prompt",
             output_path=Path("out.png"),
             retries=0,
         )
-
-    assert result is None
 
 
 def test_generate_image_inline_data_success(mock_genai_client, tmp_path):

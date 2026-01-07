@@ -160,7 +160,7 @@ class GeminiService:
                 )
 
         parts.append(types.Part.from_text(text=prompt))
-        model_name = "imagen-3.0-generate-001"
+        model_name = "gemini-2.5-flash-image"
 
         try:
             # Use tenacity Retrying context manager for dynamic retry config

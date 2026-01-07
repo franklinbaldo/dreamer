@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-from .models import Storyboard
+from .models import AnalysisConfig, ImageGenerationConfig, Storyboard
 from .service import GeminiService
 
 # Load environment variables
@@ -19,7 +19,11 @@ app = typer.Typer(help="SonicVision Studio CLI - Audio to Visual Storyboard")
 console = Console()
 
 
-def _analyze_audio(service: GeminiService, audio_file: Path) -> Storyboard:
+def _analyze_audio(
+    service: GeminiService,
+    audio_file: Path,
+    config: AnalysisConfig,
+) -> Storyboard:
     console.rule("[bold blue]Phase 1: Audio Analysis")
     with Progress(
         SpinnerColumn(),
@@ -27,7 +31,10 @@ def _analyze_audio(service: GeminiService, audio_file: Path) -> Storyboard:
         console=console,
     ) as progress:
         task = progress.add_task("Listening and Storyboarding...", total=None)
-        storyboard = service.analyze_audio(audio_file)
+        storyboard = service.analyze_audio(
+            audio_file,
+            config=config,
+        )
         progress.update(task, completed=100)
 
     console.print(
@@ -46,6 +53,7 @@ def _generate_elements(
     service: GeminiService,
     storyboard: Storyboard,
     elements_dir: Path,
+    config: ImageGenerationConfig,
 ) -> list[str]:
     console.rule("[bold purple]Phase 2: Character & Element Design")
 
@@ -62,9 +70,13 @@ def _generate_elements(
         task = progress.add_task("Generating References...", total=len(elements))
 
         for el in elements:
-            safe_name = "".join(
-                [c for c in el.name if c.isalnum() or c in (" ", "-", "_")],
-            ).strip().replace(" ", "_")
+            safe_name = (
+                "".join(
+                    [c for c in el.name if c.isalnum() or c in (" ", "-", "_")],
+                )
+                .strip()
+                .replace(" ", "_")
+            )
             img_path = elements_dir / f"{safe_name}.png"
 
             prompt = (
@@ -76,7 +88,11 @@ def _generate_elements(
             )
 
             # Generate
-            saved_path = service.generate_image(prompt, output_path=img_path)
+            saved_path = service.generate_image(
+                prompt,
+                output_path=img_path,
+                config=config,
+            )
 
             if saved_path:
                 el.image_url = saved_path
@@ -91,6 +107,7 @@ def _render_scenes(
     storyboard: Storyboard,
     scenes_dir: Path,
     ref_image_paths: list[str],
+    config: ImageGenerationConfig,
 ) -> None:
     console.rule("[bold cyan]Phase 3: Scene Production")
 
@@ -122,6 +139,7 @@ def _render_scenes(
                 prompt=scene_prompt,
                 reference_image_paths=ref_image_paths,  # Sending references!
                 output_path=img_path,
+                config=config,
             )
 
             if saved_path:
@@ -142,6 +160,23 @@ def generate(
         envvar="GEMINI_API_KEY",
         help="Google Gemini API Key",
     ),
+    analysis_model: str = typer.Option(
+        "gemini-1.5-pro",
+        "--analysis-model",
+        help="Gemini model for audio analysis",
+    ),
+    temperature: float = typer.Option(
+        0.4,
+        help="Temperature for creative analysis",
+    ),
+    image_model: str = typer.Option(
+        "imagen-3.0-generate-001",
+        "--image-model",
+        help="Model for image generation",
+    ),
+    retries: int = typer.Option(2, help="Number of retries for image generation"),
+    min_wait: int = typer.Option(2, help="Minimum wait time between retries"),
+    max_wait: int = typer.Option(10, help="Maximum wait time between retries"),
 ) -> None:
     """Transform audio into a synchronized visual storyboard using Gemini."""
     if not audio_file.exists():
@@ -156,7 +191,19 @@ def generate(
     try:
         service = GeminiService(api_key)
 
-        storyboard = _analyze_audio(service, audio_file)
+        analysis_config = AnalysisConfig(model=analysis_model, temperature=temperature)
+        image_config = ImageGenerationConfig(
+            model=image_model,
+            retries=retries,
+            min_wait=min_wait,
+            max_wait=max_wait,
+        )
+
+        storyboard = _analyze_audio(
+            service,
+            audio_file,
+            config=analysis_config,
+        )
 
         # Save JSON metadata
         with (output_dir / "storyboard.json").open("w") as f:
@@ -166,9 +213,16 @@ def generate(
             service,
             storyboard,
             output_dir / "elements",
+            config=image_config,
         )
 
-        _render_scenes(service, storyboard, output_dir / "scenes", ref_image_paths)
+        _render_scenes(
+            service,
+            storyboard,
+            output_dir / "scenes",
+            ref_image_paths,
+            config=image_config,
+        )
 
         # Update JSON with image paths
         with (output_dir / "storyboard_final.json").open("w") as f:

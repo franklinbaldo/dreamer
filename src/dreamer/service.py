@@ -1,6 +1,7 @@
 """Service for interacting with the Google Gemini API."""
 
 import base64
+import mimetypes
 from pathlib import Path
 
 from google import genai
@@ -14,7 +15,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from .models import Storyboard
+from .models import AnalysisConfig, ImageGenerationConfig, Storyboard
 
 console = Console()
 
@@ -32,11 +33,16 @@ class GeminiService:
             raise ValueError(msg)
         self.client = genai.Client(api_key=api_key)
 
-    def analyze_audio(self, audio_path: Path) -> Storyboard:
+    def analyze_audio(
+        self,
+        audio_path: Path,
+        config: AnalysisConfig | None = None,
+    ) -> Storyboard:
         """Phase 1: Analyzes audio to create a textual production design and storyboard.
 
         Args:
             audio_path: Path to the audio file.
+            config: Configuration for analysis.
 
         Returns:
             Storyboard: The generated storyboard.
@@ -45,12 +51,23 @@ class GeminiService:
             RuntimeError: If the analysis fails.
 
         """
+        if config is None:
+            config = AnalysisConfig()
         # Read and encode audio
         with audio_path.open("rb") as f:
             audio_data = f.read()
 
-        # Determine mime type based on extension
-        mime_type = "audio/mpeg" if audio_path.suffix.lower() == ".mp3" else "audio/wav"
+        # Determine mime type
+        mime_type, _ = mimetypes.guess_type(audio_path)
+        if not mime_type or not mime_type.startswith("audio/"):
+            # Fallback based on extension or error out if critical
+            # For now, let's trust the user if it looks like audio,
+            # but 'audio/wav' as safe default
+            # The prompt suggested validating formats.
+            if audio_path.suffix.lower() == ".mp3":
+                mime_type = "audio/mpeg"
+            else:
+                mime_type = "audio/wav"
 
         prompt = (
             "You are a world-class production designer.\n"
@@ -67,7 +84,7 @@ class GeminiService:
 
         try:
             response = self.client.models.generate_content(
-                model="gemini-1.5-pro",  # Using 1.5 Pro for best reasoning on audio
+                model=config.model,
                 contents=[
                     types.Content(
                         parts=[
@@ -79,7 +96,7 @@ class GeminiService:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=Storyboard,  # Pass the Pydantic class directly
-                    temperature=0.4,
+                    temperature=config.temperature,
                 ),
             )
 
@@ -126,9 +143,9 @@ class GeminiService:
     def generate_image(
         self,
         prompt: str,
+        config: ImageGenerationConfig | None = None,
         reference_image_paths: list[str] | None = None,
         output_path: Path | None = None,
-        retries: int = 2,
     ) -> str | None:
         """Generate an image using the Gemini API.
 
@@ -137,14 +154,16 @@ class GeminiService:
 
         Args:
             prompt: Text prompt for image generation.
+            config: Configuration for image generation.
             reference_image_paths: List of paths to reference images.
             output_path: Path to save the generated image.
-            retries: Number of retries on failure.
 
         Returns:
             str | None: The path to the saved image or None if failed.
 
         """
+        if config is None:
+            config = ImageGenerationConfig()
         if reference_image_paths is None:
             reference_image_paths = []
         parts = []
@@ -160,20 +179,23 @@ class GeminiService:
                 )
 
         parts.append(types.Part.from_text(text=prompt))
-        model_name = "imagen-3.0-generate-001"
 
         try:
             # Use tenacity Retrying context manager for dynamic retry config
             # reraise=False means it raises RetryError on failure
             retryer = Retrying(
-                stop=stop_after_attempt(retries + 1),
-                wait=wait_exponential(multiplier=2, min=2, max=10),
+                stop=stop_after_attempt(config.retries + 1),
+                wait=wait_exponential(
+                    multiplier=2,
+                    min=config.min_wait,
+                    max=config.max_wait,
+                ),
                 retry=retry_if_exception_type(Exception),
                 reraise=False,
             )
 
             def _attempt() -> str:
-                return self._generate_image_attempt(model_name, parts, output_path)
+                return self._generate_image_attempt(config.model, parts, output_path)
 
             return retryer(_attempt)
 

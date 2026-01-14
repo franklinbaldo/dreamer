@@ -14,8 +14,17 @@ from .models import AnalysisConfig, ImageGenerationConfig, Storyboard
 from .service import GeminiService
 
 # Setup Typer and Console
-app = typer.Typer(help="SonicVision Studio CLI - Audio to Visual Storyboard")
+app = typer.Typer(
+    name="dreamer",
+    help="SonicVision Studio CLI - Audio to Visual Storyboard",
+    add_completion=False,
+)
 console = Console()
+
+
+@app.callback(invoke_without_command=True)
+def main() -> None:
+    """SonicVision Studio CLI - Audio to Visual Storyboard."""
 
 
 def _get_service(api_key: str | None = None) -> GeminiService:
@@ -91,6 +100,13 @@ def _generate_elements(
                 .replace(" ", "_")
             )
             img_path = elements_dir / f"{safe_name}.png"
+
+            # Skip if image already exists
+            if img_path.exists():
+                el.image_url = str(img_path)
+                ref_image_paths.append(str(img_path))
+                progress.advance(task)
+                continue
 
             prompt = (
                 f"Production Design: Element Reference Sheet. "
@@ -180,13 +196,14 @@ def _render_scenes(
 
 @app.command()
 def generate(
-    audio_file: Path = typer.Argument(
+    audio_file_str: str = typer.Argument(
         ...,
+        metavar="AUDIO_FILE",
         help="Path to the input audio file (mp3/wav/etc)",
     ),
     output_dir: Path = typer.Option(
         Path("./output"),
-        help="Directory to save storyboard.json",
+        help="Directory to save generated assets",
     ),
     api_key: str | None = typer.Option(
         None,
@@ -211,14 +228,37 @@ def generate(
     min_wait: int = typer.Option(2, help="Minimum wait time between retries"),
     max_wait: int = typer.Option(10, help="Maximum wait time between retries"),
 ) -> None:
-    """Transform audio into a synchronized visual storyboard using Gemini."""
+    """
+    Transform audio into a synchronized visual storyboard.
+
+    This command orchestrates the entire pipeline:
+    1.  Analyzes audio to create a storyboard (if none exists).
+    2.  Generates reference images for characters and elements.
+    3.  Renders each scene based on the storyboard and references.
+
+    If a 'storyboard.json' is found in the output directory, it resumes
+    from the last completed step, avoiding redundant processing.
+    """
+    audio_file = Path(audio_file_str)
     if not audio_file.exists():
         console.print(f"[bold red]Error:[/bold red] File {audio_file} not found.")
         raise typer.Exit(code=1)
 
-    # Setup directories
+    supported_formats = [".mp3", ".wav", ".flac", ".aac", ".ogg"]
+    if audio_file.suffix.lower() not in supported_formats:
+        console.print(
+            f"[bold red]Error:[/bold red] Unsupported audio format: "
+            f"'{audio_file.suffix}'. Supported formats are: "
+            f"{', '.join(supported_formats)}",
+        )
+        raise typer.Exit(code=1)
+
+    # Setup directories and paths
     output_dir.mkdir(parents=True, exist_ok=True)
     storyboard_path = output_dir / "storyboard.json"
+    final_storyboard_path = output_dir / "storyboard_final.json"
+    elements_dir = output_dir / "elements"
+    scenes_dir = output_dir / "scenes"
 
     try:
         service = _get_service(api_key)
@@ -231,107 +271,44 @@ def generate(
             max_wait=max_wait,
         )
 
-        storyboard = _analyze_audio(
-            service,
-            audio_file,
-            config=analysis_config,
-        )
+        # Phase 1: Analysis (or load existing)
+        if storyboard_path.exists():
+            console.print(f"Found existing storyboard at {storyboard_path}, resuming...")
+            with storyboard_path.open("r") as f:
+                storyboard = Storyboard.model_validate_json(f.read())
+        else:
+            storyboard = _analyze_audio(
+                service,
+                audio_file,
+                config=analysis_config,
+            )
+            # Save initial storyboard
+            with storyboard_path.open("w") as f:
+                f.write(storyboard.model_dump_json(indent=2))
+            console.print(f"Storyboard saved to {storyboard_path}")
 
-        # Save JSON metadata
-        with storyboard_path.open("w") as f:
-            f.write(storyboard.model_dump_json(indent=2))
-
+        # Phase 2: Element Generation
         ref_image_paths = _generate_elements(
             service,
             storyboard,
-            output_dir / "elements",
+            elements_dir,
             config=image_config,
         )
-
-        _render_scenes(
-            service,
-            storyboard,
-            output_dir / "scenes",
-            ref_image_paths,
-            config=image_config,
-        )
-
-        # Update JSON with image paths
+        # Update storyboard with element image paths and save
         with storyboard_path.open("w") as f:
             f.write(storyboard.model_dump_json(indent=2))
 
-        console.rule("[bold green]Production Complete")
-        console.print(f"Output saved to: [underline]{output_dir.absolute()}[/underline]")
-
-    except Exception as e:
-        console.print(f"[bold red]Fatal Error:[/bold red] {e}")
-        raise typer.Exit(code=1) from e
-
-
-@app.command()
-def render(
-    storyboard_path: Path = typer.Argument(
-        ...,
-        help="Path to the storyboard.json file",
-    ),
-    refs_dir: Path = typer.Option(
-        None,
-        help="Directory containing reference images",
-    ),
-    output_dir: Path = typer.Option(
-        None,
-        help="Directory to save scenes (defaults to storyboard dir / scenes)",
-    ),
-    image_model: str = typer.Option(
-        "imagen-3.0-generate-001",
-        help="Model for image generation",
-    ),
-    api_key: str | None = typer.Option(
-        None,
-        envvar="GEMINI_API_KEY",
-        help="Google Gemini API Key",
-    ),
-) -> None:
-    """Phase 3: Render final scenes."""
-    if not storyboard_path.exists():
-        console.print(f"[bold red]Error:[/bold red] File {storyboard_path} not found.")
-        raise typer.Exit(code=1)
-
-    base_dir = storyboard_path.parent
-    if refs_dir is None:
-        refs_dir = base_dir / "elements"
-    if output_dir is None:
-        output_dir = base_dir / "scenes"
-
-    try:
-        service = _get_service(api_key)
-        image_config = ImageGenerationConfig(model=image_model)
-
-        with storyboard_path.open("r") as f:
-             storyboard = Storyboard.model_validate_json(f.read())
-
-        ref_image_paths = []
-        if storyboard.production_design.recurring_elements:
-             for el in storyboard.production_design.recurring_elements:
-                 if el.image_url:
-                     p = Path(el.image_url)
-                     if p.exists():
-                         ref_image_paths.append(str(p))
-                     else:
-                         maybe_path = refs_dir / p.name
-                         if maybe_path.exists():
-                             ref_image_paths.append(str(maybe_path))
-
+        # Phase 3: Scene Rendering
         _render_scenes(
             service,
             storyboard,
-            output_dir,
+            scenes_dir,
             ref_image_paths,
             config=image_config,
         )
 
-        # Update JSON with image paths
-        with (base_dir / "storyboard_final.json").open("w") as f:
+        # Save final manifest with all image URLs
+        with final_storyboard_path.open("w") as f:
             f.write(storyboard.model_dump_json(indent=2))
 
         console.rule("[bold green]Production Complete")
@@ -340,54 +317,6 @@ def render(
     except Exception as e:
         console.print(f"[bold red]Fatal Error:[/bold red] {e}")
         raise typer.Exit(code=1) from e
-
-
-@app.command()
-def resume(
-    output_dir: Path = typer.Argument(
-        ...,
-        help="Directory containing storyboard.json to resume processing",
-    ),
-    api_key: str | None = typer.Option(
-        None,
-        envvar="GEMINI_API_KEY",
-        help="Google Gemini API Key",
-    ),
-) -> None:
-    """Resume processing from an existing output directory."""
-    storyboard_path = output_dir / "storyboard.json"
-    if not storyboard_path.exists():
-        console.print(f"[bold red]Error:[/bold red] {storyboard_path} not found.")
-        raise typer.Exit(code=1)
-
-    console.print(f"Resuming processing for {output_dir}...")
-
-    # Design Phase
-    # Note: We need to handle the logic here or call the functions.
-    # For simplicity, we'll assume the user wants to run both phases.
-    service = _get_service(api_key)
-    with storyboard_path.open("r") as f:
-        storyboard = Storyboard.model_validate_json(f.read())
-    
-    image_config = ImageGenerationConfig()
-    
-    ref_image_paths = _generate_elements(
-        service,
-        storyboard,
-        output_dir / "elements",
-        config=image_config,
-    )
-
-    _render_scenes(
-        service,
-        storyboard,
-        output_dir / "scenes",
-        ref_image_paths,
-        config=image_config,
-    )
-
-    with (output_dir / "storyboard_final.json").open("w") as f:
-        f.write(storyboard.model_dump_json(indent=2))
 
 
 # Jules Integration
@@ -396,6 +325,7 @@ try:
     app.add_typer(jules_app, name="jules")
 except ImportError:
     pass
+
 
 if __name__ == "__main__":
     app()

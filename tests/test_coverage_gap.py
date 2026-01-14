@@ -48,10 +48,11 @@ def test_generate_invalid_audio_extension():
     with runner.isolated_filesystem():
         Path("test.txt").write_text("dummy audio")
 
-        result = runner.invoke(app, ["test.txt"])
+        result = runner.invoke(app, ["generate", "test.txt", "--api-key", "fake-key"])
 
         assert result.exit_code == 1
-        assert "Unsupported audio format: .txt" in result.stdout
+        assert "Unsupported audio format" in result.stdout
+        assert ".txt" in result.stdout
 
 def test_generate_element_generation_failure(mock_service, dummy_storyboard):
     # Setup mock service
@@ -70,7 +71,7 @@ def test_generate_element_generation_failure(mock_service, dummy_storyboard):
         # Create valid audio file
         Path("audio.mp3").write_bytes(b"mp3")
 
-        result = runner.invoke(app, ["audio.mp3"])
+        result = runner.invoke(app, ["generate", "audio.mp3", "--api-key", "fake-key"])
 
         assert result.exit_code == 0
         assert (
@@ -95,7 +96,7 @@ def test_generate_scene_generation_failure(mock_service, dummy_storyboard):
     with runner.isolated_filesystem():
         Path("audio.mp3").write_bytes(b"mp3")
 
-        result = runner.invoke(app, ["audio.mp3"])
+        result = runner.invoke(app, ["generate", "audio.mp3", "--api-key", "fake-key"])
 
         assert result.exit_code == 0
         assert "Warning: Failed to generate scene 0: API Error Scene" in result.stdout
